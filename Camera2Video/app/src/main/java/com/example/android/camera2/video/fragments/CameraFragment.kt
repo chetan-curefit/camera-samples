@@ -21,26 +21,22 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.graphics.Color
-import android.hardware.camera2.CameraCaptureSession
-import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraDevice
-import android.hardware.camera2.CameraManager
-import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.*
 import android.media.MediaCodec
 import android.media.MediaRecorder
 import android.media.MediaScannerConnection
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import android.util.Range
-import android.view.LayoutInflater
-import android.view.MotionEvent
-import android.view.Surface
-import android.view.SurfaceHolder
-import android.view.View
-import android.view.ViewGroup
+import android.view.*
 import android.webkit.MimeTypeMap
+import android.widget.ImageButton
+import android.widget.SeekBar
+import android.widget.TextView
+import androidx.annotation.RequiresApi
 import androidx.core.content.FileProvider
 import androidx.core.graphics.drawable.toDrawable
 import androidx.fragment.app.Fragment
@@ -61,13 +57,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.File
+import java.lang.Long.max
 import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import kotlin.RuntimeException
+import java.util.*
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
+import kotlin.math.abs
+import kotlin.math.min
 
 class CameraFragment : Fragment() {
 
@@ -149,26 +146,22 @@ class CameraFragment : Fragment() {
     /** The [CameraDevice] that will be opened in this fragment */
     private lateinit var camera: CameraDevice
 
-    /** Requests used for preview only in the [CameraCaptureSession] */
-    private val previewRequest: CaptureRequest by lazy {
-        // Capture request holds references to target surfaces
-        session.device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-            // Add the preview surface target
-            addTarget(viewFinder.holder.surface)
-        }.build()
-    }
 
-    /** Requests used for preview and recording in the [CameraCaptureSession] */
-    private val recordRequest: CaptureRequest by lazy {
-        // Capture request holds references to target surfaces
-        session.device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
-            // Add the preview and recording surface targets
-            addTarget(viewFinder.holder.surface)
-            addTarget(recorderSurface)
-            // Sets user requested FPS for all targets
-            set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(args.fps, args.fps))
-        }.build()
-    }
+    /** the seekbars for iso and exposure */
+    private lateinit var isoSeekbar: SeekBar
+    private lateinit var exposureSeekbar: SeekBar
+
+    /** textview for iso and seekbars */
+    private lateinit var isoText: TextView
+    private lateinit var exposureText: TextView
+
+    private var currentExposureValue: Long = (EXPOSURE_PRACTICAL_RANGE.upper+ EXPOSURE_PRACTICAL_RANGE.lower)/2
+    private var currentISOValue: Long = (ISO_PRACTICAL_RANGE.lower + ISO_PRACTICAL_RANGE.upper)/2
+
+    private var exposureDeviceRange: Range<Long>? = null
+    private var isoDeviceRange: Range<Long>? = null
+
+    private var isRecording: Boolean = false
 
     private var recordingStartMillis: Long = 0L
 
@@ -181,11 +174,20 @@ class CameraFragment : Fragment() {
             savedInstanceState: Bundle?
     ): View? = inflater.inflate(R.layout.fragment_camera, container, false)
 
+    @RequiresApi(Build.VERSION_CODES.O)
     @SuppressLint("MissingPermission")
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         overlay = view.findViewById(R.id.overlay)
         viewFinder = view.findViewById(R.id.view_finder)
+        isoSeekbar = view.findViewById(R.id.iso)
+        exposureSeekbar = view.findViewById(R.id.exposure)
+        isoText = view.findViewById(R.id.iso_title)
+        exposureText = view.findViewById(R.id.exposureTitle)
+
+        initialiseSeekBar(isoText, SEEKBAR_TYPE.ISO)
+        initialiseSeekBar(exposureText, SEEKBAR_TYPE.EXPOSURE)
+
 
         viewFinder.holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceDestroyed(holder: SurfaceHolder) = Unit
@@ -215,6 +217,8 @@ class CameraFragment : Fragment() {
                 orientation -> Log.d(TAG, "Orientation changed: $orientation")
             })
         }
+
+        setRanges()
     }
 
     /** Creates a [MediaRecorder] instance using the provided [Surface] as input */
@@ -251,76 +255,241 @@ class CameraFragment : Fragment() {
 
         // Sends the capture request as frequently as possible until the session is torn down or
         //  session.stopRepeating() is called
-        session.setRepeatingRequest(previewRequest, null, cameraHandler)
+        // capture request for the surface
+        session.setRepeatingRequest(createCaptureRequest(), null, cameraHandler)
 
-        // React to user touching the capture button
-        capture_button.setOnTouchListener { view, event ->
-            when (event.action) {
+        capture_button.setOnClickListener(object : View.OnClickListener {
+            override fun onClick(view: View) {
+                if (!isRecording)
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        isRecording = true
+                        // Prevents screen rotation during the video recording
+                        requireActivity().requestedOrientation =
+                                ActivityInfo.SCREEN_ORIENTATION_LOCKED
 
-                MotionEvent.ACTION_DOWN -> lifecycleScope.launch(Dispatchers.IO) {
+                        // Start recording repeating requests, which will stop the ongoing preview
+                        //  repeating requests without having to explicitly call `session.stopRepeating`
+                        session.setRepeatingRequest(createCaptureRequest(), null, cameraHandler)
 
-                    // Prevents screen rotation during the video recording
-                    requireActivity().requestedOrientation =
-                            ActivityInfo.SCREEN_ORIENTATION_LOCKED
+                        // Finalizes recorder setup and starts recording
+                        recorder.apply {
+                            // Sets output orientation based on current sensor value at start time
+                            relativeOrientation.value?.let { setOrientationHint(it) }
+                            prepare()
+                            start()
+                        }
 
-                    // Start recording repeating requests, which will stop the ongoing preview
-                    //  repeating requests without having to explicitly call `session.stopRepeating`
-                    session.setRepeatingRequest(recordRequest, null, cameraHandler)
+                        recordingStartMillis = System.currentTimeMillis()
 
-                    // Finalizes recorder setup and starts recording
-                    recorder.apply {
-                        // Sets output orientation based on current sensor value at start time
-                        relativeOrientation.value?.let { setOrientationHint(it) }
-                        prepare()
-                        start()
-                    }
-                    recordingStartMillis = System.currentTimeMillis()
-                    Log.d(TAG, "Recording started")
+                        requireActivity().runOnUiThread(object : Runnable {
+                            override fun run() {
+                                (view as ImageButton).isSelected = true
+                            }
+                        })
 
-                    // Starts recording animation
-                    overlay.post(animationTask)
+                        Log.d(TAG, "Recording started")
+
+                        // Starts recording animation
+                        //overlay.post(animationTask)
+                    } else lifecycleScope.launch(Dispatchers.IO) {
+                        isRecording = false
+
+                        requireActivity().runOnUiThread { (view as ImageButton).isSelected = false }
+
+                        // Unlocks screen rotation after recording finished
+                        requireActivity().requestedOrientation =
+                                ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+
+                        // Requires recording of at least MIN_REQUIRED_RECORDING_TIME_MILLIS
+                        val elapsedTimeMillis = System.currentTimeMillis() - recordingStartMillis
+                        if (elapsedTimeMillis < MIN_REQUIRED_RECORDING_TIME_MILLIS) {
+                            delay(MIN_REQUIRED_RECORDING_TIME_MILLIS - elapsedTimeMillis)
+                        }
+
+                        Log.d(TAG, "Recording stopped. Output file: $outputFile")
+                        recorder.stop()
+
+
+                        // Removes recording animation
+                        //overlay.removeCallbacks(animationTask)
+
+                        // Broadcasts the media file to the rest of the system
+                        MediaScannerConnection.scanFile(
+                                view.context, arrayOf(outputFile.absolutePath), null, null)
+
+                        // Launch external activity via intent to play video recorded using our provider
+                        startActivity(Intent().apply {
+                            action = Intent.ACTION_VIEW
+                            type = MimeTypeMap.getSingleton()
+                                    .getMimeTypeFromExtension(outputFile.extension)
+                            val authority = "${BuildConfig.APPLICATION_ID}.provider"
+                            data = FileProvider.getUriForFile(view.context, authority, outputFile)
+                            flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                    Intent.FLAG_ACTIVITY_CLEAR_TOP
+                        })
+
+                        // Finishes our current camera screen
+                        delay(CameraActivity.ANIMATION_SLOW_MILLIS)
+                        navController.popBackStack()
                 }
+            }
+        })
 
-                MotionEvent.ACTION_UP -> lifecycleScope.launch(Dispatchers.IO) {
+    }
 
-                    // Unlocks screen rotation after recording finished
-                    requireActivity().requestedOrientation =
-                            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    @RequiresApi(Build.VERSION_CODES.O)
+    private fun initialiseSeekBar(textView: TextView, seekbarType: SEEKBAR_TYPE) {
+        val seekBar = getSeekBar(seekbarType)
+        // set the intiial seekbar progress
+        setProgressPercent(if (seekbarType == SEEKBAR_TYPE.ISO) currentISOValue!!.toLong() else currentExposureValue!!, seekBar!!, seekbarType)
+        if (getCurrentSeekValue(seekbarType) != null) {
+            textView.text = getSeekBarText(seekbarType) + " " + getCurrentSeekValue(seekbarType)
+        }
+        seekBar.setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener {
+           override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
 
-                    // Requires recording of at least MIN_REQUIRED_RECORDING_TIME_MILLIS
-                    val elapsedTimeMillis = System.currentTimeMillis() - recordingStartMillis
-                    if (elapsedTimeMillis < MIN_REQUIRED_RECORDING_TIME_MILLIS) {
-                        delay(MIN_REQUIRED_RECORDING_TIME_MILLIS - elapsedTimeMillis)
+               val newCaptureRequestValue = setCaptureRequestValue(seekbarType, progress)
+               if (newCaptureRequestValue != null) {
+                   textView.text = getSeekBarText(seekbarType) + " " + newCaptureRequestValue
+               }
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {
+                // not implemented
+            }
+
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                // not implemented
+            }
+        })
+    }
+
+    private fun getSeekBarText(seekbarType: SEEKBAR_TYPE): String {
+        var seekBarText: String = ""
+        when (seekbarType) {
+            SEEKBAR_TYPE.EXPOSURE -> seekBarText = "Exposure"
+            SEEKBAR_TYPE.ISO -> seekBarText = "Iso"
+        }
+        return seekBarText
+    }
+
+
+    // creates new captureRequest
+    @RequiresApi(Build.VERSION_CODES.N)
+    private fun setCaptureRequestValue(seekbarType: SEEKBAR_TYPE?, progress: Int): Long? {
+        val captureRequestValue = getRangedValue(seekbarType, progress)
+        val captureRequest: CaptureRequest =  createCaptureRequest(seekbarType, captureRequestValue)
+
+        session.setRepeatingRequest(captureRequest, null, cameraHandler)
+        return captureRequestValue
+    }
+
+    private fun createCaptureRequest(): CaptureRequest {
+        return createCaptureRequest(null, null)
+    }
+
+    private fun createCaptureRequest(seekbarType: SEEKBAR_TYPE?, newParamValue: Long?): CaptureRequest {
+        return session.device.createCaptureRequest(if (isRecording) CameraDevice.TEMPLATE_RECORD else CameraDevice.TEMPLATE_PREVIEW).apply {
+            // Add the preview and recording surface targets
+            addTarget(viewFinder.holder.surface)
+            if (isRecording) {
+                addTarget(recorderSurface)
+                // Sets user requested FPS for all targets
+                set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(args.fps, args.fps))
+            }
+            // for controlling exposure and iso
+            set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_TORCH)
+            set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
+            set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_OFF)
+
+            if (newParamValue != null) {
+                when (seekbarType) {
+                    SEEKBAR_TYPE.EXPOSURE -> {
+                        currentExposureValue = newParamValue
                     }
-
-                    Log.d(TAG, "Recording stopped. Output file: $outputFile")
-                    recorder.stop()
-
-                    // Removes recording animation
-                    overlay.removeCallbacks(animationTask)
-
-                    // Broadcasts the media file to the rest of the system
-                    MediaScannerConnection.scanFile(
-                            view.context, arrayOf(outputFile.absolutePath), null, null)
-
-                    // Launch external activity via intent to play video recorded using our provider
-                    startActivity(Intent().apply {
-                        action = Intent.ACTION_VIEW
-                        type = MimeTypeMap.getSingleton()
-                                .getMimeTypeFromExtension(outputFile.extension)
-                        val authority = "${BuildConfig.APPLICATION_ID}.provider"
-                        data = FileProvider.getUriForFile(view.context, authority, outputFile)
-                        flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                                Intent.FLAG_ACTIVITY_CLEAR_TOP
-                    })
-
-                    // Finishes our current camera screen
-                    delay(CameraActivity.ANIMATION_SLOW_MILLIS)
-                    navController.popBackStack()
+                    SEEKBAR_TYPE.ISO -> {
+                        currentISOValue = newParamValue
+                    }
                 }
             }
 
-            true
+            set(CaptureRequest.SENSOR_EXPOSURE_TIME, currentExposureValue)
+            set(CaptureRequest.SENSOR_SENSITIVITY, currentISOValue!!.toInt())
+        }.build()
+    }
+
+    /** To get the characteristic value after seek */
+    @RequiresApi(Build.VERSION_CODES.N)
+    private fun getRangedValue(seekbarType: SEEKBAR_TYPE?, progress: Int): Long? {
+        // not using the full exposure range since it gives bad output
+        if (seekbarType == null) return null
+        val chosenRange = if (seekbarType == SEEKBAR_TYPE.EXPOSURE) EXPOSURE_PRACTICAL_RANGE else getDeviceRange(seekbarType)
+        val deviceRange = if (seekbarType == SEEKBAR_TYPE.EXPOSURE) exposureDeviceRange else isoDeviceRange
+        if (chosenRange != null && deviceRange != null) {
+            //Log.d("__ranges ", (if (seekbarType == SEEKBAR_TYPE.ISO) "iso" else "exposure") + " " + chosenRange.toString())
+            val calculatedValue: Long = chosenRange.lower + (chosenRange.upper - chosenRange.lower)*progress/100
+            return validateRange(deviceRange, validateRange(chosenRange, calculatedValue))
+        }
+        return null
+    }
+
+    @RequiresApi(Build.VERSION_CODES.N)
+    private fun validateRange(range: Range<Long>, calculatedValue: Long): Long {
+        return min(range.upper, max(range.lower, calculatedValue))
+    }
+
+    private fun getDeviceRange(seekbarType: SEEKBAR_TYPE): Range<Long>? {
+        val key = getKey(seekbarType) as CameraCharacteristics.Key<Range<Long>>
+        return characteristics.get(key)
+    }
+
+    private fun getPracticalRange(seekbarType: SEEKBAR_TYPE): Range<Long>? {
+        return when(seekbarType) {
+            SEEKBAR_TYPE.EXPOSURE -> EXPOSURE_PRACTICAL_RANGE
+            SEEKBAR_TYPE.ISO ->  ISO_PRACTICAL_RANGE
+        }
+    }
+
+    private fun getKey(seekBarType: SEEKBAR_TYPE): CameraCharacteristics.Key<*> {
+        return when (seekBarType) {
+            SEEKBAR_TYPE.EXPOSURE -> CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE
+            SEEKBAR_TYPE.ISO -> CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE
+        }
+    }
+
+    private fun getSeekBar(seekBartype: SEEKBAR_TYPE): SeekBar? {
+        return when(seekBartype) {
+            SEEKBAR_TYPE.ISO -> isoSeekbar
+            SEEKBAR_TYPE.EXPOSURE -> exposureSeekbar
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.N)
+    private  fun  setProgressPercent(target: Long, seekBar: SeekBar, seekbarType: SEEKBAR_TYPE) {
+        val range = getIntersectedRange(getDeviceRange(seekbarType), getPracticalRange(seekbarType)) ?: return
+        val progress = abs(target - range.lower) * 100/(range.upper - range.lower)
+        if (progress <= 100) {
+            seekBar.setProgress(progress.toInt())
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.N)
+    private fun getIntersectedRange(range1: Range<Long>?, range2: Range<Long>?): Range<Long>? {
+        if (range1 == null || range2 == null) {
+            return null
+        }
+        return Range(max(range1.lower, range2.lower), min(range2.upper, range1.upper))
+    }
+
+    private fun setRanges() {
+        isoDeviceRange = getDeviceRange(SEEKBAR_TYPE.ISO)
+        exposureDeviceRange = getDeviceRange(SEEKBAR_TYPE.EXPOSURE)
+    }
+
+    private fun getCurrentSeekValue(seekbarType: SEEKBAR_TYPE): Long {
+        return when(seekbarType) {
+            SEEKBAR_TYPE.ISO -> currentISOValue
+            SEEKBAR_TYPE.EXPOSURE -> currentExposureValue
         }
     }
 
@@ -379,6 +548,32 @@ class CameraFragment : Fragment() {
         }, handler)
     }
 
+    private fun isHardwareLevelSupported(c: CameraCharacteristics, requiredLevel: Int): Boolean {
+        val sortedHWLevels: Array<Int> = arrayOf(
+            CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY,
+            CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_EXTERNAL,
+            CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED,
+            CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_FULL,
+            CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_3
+        )
+
+        val deviceLevel: Int? = c.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL)
+
+        if (requiredLevel == deviceLevel) {
+            return true
+        }
+
+        for (sortedLevel in sortedHWLevels) {
+            if (sortedLevel == requiredLevel) {
+                return true
+            } else if (sortedLevel == deviceLevel) {
+                return false
+            }
+        }
+
+        return false
+    }
+
     override fun onStop() {
         super.onStop()
         try {
@@ -401,10 +596,19 @@ class CameraFragment : Fragment() {
         private const val RECORDER_VIDEO_BITRATE: Int = 10_000_000
         private const val MIN_REQUIRED_RECORDING_TIME_MILLIS: Long = 1000L
 
+        private val ISO_PRACTICAL_RANGE = Range<Long>(100, 3200)
+        private val EXPOSURE_PRACTICAL_RANGE = Range<Long>(100000, 50090000)
+
+        enum class SEEKBAR_TYPE {
+            EXPOSURE,
+            ISO
+        }
+
+
         /** Creates a [File] named with the current date and time */
         private fun createFile(context: Context, extension: String): File {
             val sdf = SimpleDateFormat("yyyy_MM_dd_HH_mm_ss_SSS", Locale.US)
-            return File(context.filesDir, "VID_${sdf.format(Date())}.$extension")
+            return File(context.getExternalFilesDir(null), "VID_${sdf.format(Date())}.$extension")
         }
     }
 }

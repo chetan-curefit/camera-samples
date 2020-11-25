@@ -17,7 +17,7 @@
 <androidx.constraintlayout.widget.ConstraintLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:layout_width="match_parent"
+        android:layout_width="match_parent"
     android:layout_height="match_parent">
 
     <com.example.android.camera.utils.AutoFitSurfaceView
@@ -30,6 +30,48 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:foreground="@android:color/transparent" />
+
+    <TextView
+            android:id="@+id/exposureTitle"
+            android:layout_margin="20dp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            app:layout_constraintBottom_toTopOf="@+id/exposure"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            android:layout_marginBottom="10dp"
+            android:text="Exposure"
+            android:textColor="#FFFFFF" />
+
+    <SeekBar
+            android:layout_width="341dp"
+            android:layout_height="12dp"
+            android:id="@+id/exposure"
+            app:layout_constraintLeft_toLeftOf="parent"
+            app:layout_constraintRight_toRightOf="parent"
+            app:layout_constraintTop_toTopOf="@+id/view_finder"
+            android:layout_marginTop="50dp" />
+
+    <TextView
+            android:id="@+id/iso_title"
+            android:layout_margin="20dp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            app:layout_constraintBottom_toTopOf="@+id/iso"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@+id/exposure"
+            android:layout_marginBottom="10dp"
+            android:text="Iso"
+            android:textColor="#FFFFFF" />
+    <SeekBar
+            android:layout_width="341dp"
+            android:layout_height="12dp"
+            android:id="@+id/iso"
+            app:layout_constraintLeft_toLeftOf="parent"
+            app:layout_constraintRight_toRightOf="parent"
+            app:layout_constraintTop_toBottomOf="@+id/exposure"
+            android:layout_marginTop="30dp" />
 
     <ImageButton
         android:id="@+id/capture_button"
