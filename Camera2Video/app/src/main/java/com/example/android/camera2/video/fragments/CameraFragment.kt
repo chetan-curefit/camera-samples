@@ -66,6 +66,10 @@ import kotlin.coroutines.suspendCoroutine
 import kotlin.math.abs
 import kotlin.math.min
 
+sealed class ValueRange
+data class EndPointRange(val range: Range<Long>?): ValueRange()
+data class DiscretePointRange(val range: FloatArray?): ValueRange()
+
 class CameraFragment : Fragment() {
 
     /** AndroidX navigation arguments */
@@ -150,16 +154,20 @@ class CameraFragment : Fragment() {
     /** the seekbars for iso and exposure */
     private lateinit var isoSeekbar: SeekBar
     private lateinit var exposureSeekbar: SeekBar
+    private lateinit var apertureSeekbar: SeekBar
 
     /** textview for iso and seekbars */
     private lateinit var isoText: TextView
     private lateinit var exposureText: TextView
+    private lateinit var apertureText: TextView
 
-    private var currentExposureValue: Long = (EXPOSURE_PRACTICAL_RANGE.upper+ EXPOSURE_PRACTICAL_RANGE.lower)/2
-    private var currentISOValue: Long = (ISO_PRACTICAL_RANGE.lower + ISO_PRACTICAL_RANGE.upper)/2
+    private var currentExposureValue: Long = (EXPOSURE_PRACTICAL_RANGE.range!!.upper+ EXPOSURE_PRACTICAL_RANGE.range.lower)/2
+    private var currentISOValue: Long = (ISO_PRACTICAL_RANGE.range!!.lower + ISO_PRACTICAL_RANGE.range.upper)/2
+    private var currentApertureValue: Float? = null
 
-    private var exposureDeviceRange: Range<Long>? = null
-    private var isoDeviceRange: Range<Long>? = null
+    private var exposureDeviceRange: EndPointRange? = null
+    private var isoDeviceRange: EndPointRange? = null
+    private var apertureDeviceRange: DiscretePointRange? = null
 
     private var isRecording: Boolean = false
 
@@ -182,11 +190,15 @@ class CameraFragment : Fragment() {
         viewFinder = view.findViewById(R.id.view_finder)
         isoSeekbar = view.findViewById(R.id.iso)
         exposureSeekbar = view.findViewById(R.id.exposure)
+        apertureSeekbar = view.findViewById(R.id.aperture)
         isoText = view.findViewById(R.id.iso_title)
         exposureText = view.findViewById(R.id.exposureTitle)
+        apertureText = view.findViewById(R.id.aperture_title)
+
 
         initialiseSeekBar(isoText, SEEKBAR_TYPE.ISO)
         initialiseSeekBar(exposureText, SEEKBAR_TYPE.EXPOSURE)
+        initialiseSeekBar(apertureText, SEEKBAR_TYPE.APERTURE)
 
 
         viewFinder.holder.addCallback(object : SurfaceHolder.Callback {
@@ -341,7 +353,12 @@ class CameraFragment : Fragment() {
     private fun initialiseSeekBar(textView: TextView, seekbarType: SEEKBAR_TYPE) {
         val seekBar = getSeekBar(seekbarType)
         // set the intiial seekbar progress
-        setProgressPercent(if (seekbarType == SEEKBAR_TYPE.ISO) currentISOValue!!.toLong() else currentExposureValue!!, seekBar!!, seekbarType)
+        val target = when (seekbarType) {
+            SEEKBAR_TYPE.EXPOSURE -> currentExposureValue
+            SEEKBAR_TYPE.ISO -> currentISOValue
+            else -> null
+        }
+        setProgressPercent(target, seekBar!!, seekbarType)
         if (getCurrentSeekValue(seekbarType) != null) {
             textView.text = getSeekBarText(seekbarType) + " " + getCurrentSeekValue(seekbarType)
         }
@@ -376,7 +393,7 @@ class CameraFragment : Fragment() {
 
     // creates new captureRequest
     @RequiresApi(Build.VERSION_CODES.N)
-    private fun setCaptureRequestValue(seekbarType: SEEKBAR_TYPE?, progress: Int): Long? {
+    private fun setCaptureRequestValue(seekbarType: SEEKBAR_TYPE, progress: Int): Any? {
         val captureRequestValue = getRangedValue(seekbarType, progress)
         val captureRequest: CaptureRequest =  createCaptureRequest(seekbarType, captureRequestValue)
 
@@ -388,7 +405,7 @@ class CameraFragment : Fragment() {
         return createCaptureRequest(null, null)
     }
 
-    private fun createCaptureRequest(seekbarType: SEEKBAR_TYPE?, newParamValue: Long?): CaptureRequest {
+    private fun createCaptureRequest(seekbarType: SEEKBAR_TYPE?, newParamValue: Number?): CaptureRequest {
         return session.device.createCaptureRequest(if (isRecording) CameraDevice.TEMPLATE_RECORD else CameraDevice.TEMPLATE_PREVIEW).apply {
             // Add the preview and recording surface targets
             addTarget(viewFinder.holder.surface)
@@ -405,48 +422,77 @@ class CameraFragment : Fragment() {
             if (newParamValue != null) {
                 when (seekbarType) {
                     SEEKBAR_TYPE.EXPOSURE -> {
-                        currentExposureValue = newParamValue
+                        currentExposureValue = newParamValue as Long
                     }
                     SEEKBAR_TYPE.ISO -> {
-                        currentISOValue = newParamValue
+                        currentISOValue = newParamValue as Long
+                    }
+                    SEEKBAR_TYPE.APERTURE -> {
+                        currentApertureValue = newParamValue as Float
                     }
                 }
             }
 
             set(CaptureRequest.SENSOR_EXPOSURE_TIME, currentExposureValue)
             set(CaptureRequest.SENSOR_SENSITIVITY, currentISOValue!!.toInt())
+            set(CaptureRequest.LENS_APERTURE, currentApertureValue)
         }.build()
     }
 
     /** To get the characteristic value after seek */
     @RequiresApi(Build.VERSION_CODES.N)
-    private fun getRangedValue(seekbarType: SEEKBAR_TYPE?, progress: Int): Long? {
+    private fun getRangedValue(seekbarType: SEEKBAR_TYPE, progress: Int): Number? {
         // not using the full exposure range since it gives bad output
+        return when(seekbarType) {
+            SEEKBAR_TYPE.ISO, SEEKBAR_TYPE.EXPOSURE -> getEndPointRangedValue(seekbarType, progress)
+            SEEKBAR_TYPE.APERTURE -> getDiscretePointRangedValue(seekbarType, progress)
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.N)
+    private fun getEndPointRangedValue(seekbarType: SEEKBAR_TYPE?, progress: Int): Long? {
         if (seekbarType == null) return null
-        val chosenRange = if (seekbarType == SEEKBAR_TYPE.EXPOSURE) EXPOSURE_PRACTICAL_RANGE else getDeviceRange(seekbarType)
-        val deviceRange = if (seekbarType == SEEKBAR_TYPE.EXPOSURE) exposureDeviceRange else isoDeviceRange
-        if (chosenRange != null && deviceRange != null) {
-            //Log.d("__ranges ", (if (seekbarType == SEEKBAR_TYPE.ISO) "iso" else "exposure") + " " + chosenRange.toString())
-            val calculatedValue: Long = chosenRange.lower + (chosenRange.upper - chosenRange.lower)*progress/100
-            return validateRange(deviceRange, validateRange(chosenRange, calculatedValue))
+
+        // not using the full exposure range since it gives bad output
+        val chosenRange = if (seekbarType == SEEKBAR_TYPE.EXPOSURE) EXPOSURE_PRACTICAL_RANGE else getDeviceRange(seekbarType) as EndPointRange?
+        val deviceRange = getDeviceRange(seekbarType) as EndPointRange?
+        if (chosenRange?.range != null && deviceRange?.range != null) {
+            val calculatedValue: Long = chosenRange.range.lower + (chosenRange.range.upper - chosenRange.range.lower)*progress/100
+            return adjustWithinRange(deviceRange.range, adjustWithinRange(chosenRange.range, calculatedValue))
+        }
+        return null
+    }
+
+    private fun getDiscretePointRangedValue(seekbarType: SEEKBAR_TYPE, progress: Int): Float? {
+        val discretePointRange = when (seekbarType) {
+            SEEKBAR_TYPE.APERTURE -> getDeviceRange(seekbarType) as DiscretePointRange?
+            else -> return null
+        }
+        if (discretePointRange?.range != null) {
+            return discretePointRange.range[((progress / 101.toDouble())*discretePointRange.range.size).toInt()]
         }
         return null
     }
 
     @RequiresApi(Build.VERSION_CODES.N)
-    private fun validateRange(range: Range<Long>, calculatedValue: Long): Long {
+    private fun adjustWithinRange(range: Range<Long>, calculatedValue: Long): Long {
         return min(range.upper, max(range.lower, calculatedValue))
     }
 
-    private fun getDeviceRange(seekbarType: SEEKBAR_TYPE): Range<Long>? {
-        val key = getKey(seekbarType) as CameraCharacteristics.Key<Range<Long>>
-        return characteristics.get(key)
+    private fun getDeviceRange(seekbarType: SEEKBAR_TYPE): ValueRange? {
+        val key = getKey(seekbarType)
+        return when(seekbarType) {
+            SEEKBAR_TYPE.EXPOSURE -> if (exposureDeviceRange != null) exposureDeviceRange else EndPointRange( characteristics.get(key as CameraCharacteristics.Key<Range<Long>>) )
+            SEEKBAR_TYPE.ISO -> if (isoDeviceRange != null) isoDeviceRange else EndPointRange(characteristics.get(key as CameraCharacteristics.Key<Range<Long>>))
+            SEEKBAR_TYPE.APERTURE -> if (apertureDeviceRange != null) apertureDeviceRange else DiscretePointRange(characteristics.get(key as CameraCharacteristics.Key<FloatArray>))
+        }
     }
 
-    private fun getPracticalRange(seekbarType: SEEKBAR_TYPE): Range<Long>? {
+    private fun getPracticalRange(seekbarType: SEEKBAR_TYPE): ValueRange? {
         return when(seekbarType) {
             SEEKBAR_TYPE.EXPOSURE -> EXPOSURE_PRACTICAL_RANGE
             SEEKBAR_TYPE.ISO ->  ISO_PRACTICAL_RANGE
+            SEEKBAR_TYPE.APERTURE -> null
         }
     }
 
@@ -454,6 +500,7 @@ class CameraFragment : Fragment() {
         return when (seekBarType) {
             SEEKBAR_TYPE.EXPOSURE -> CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE
             SEEKBAR_TYPE.ISO -> CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE
+            SEEKBAR_TYPE.APERTURE -> CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES
         }
     }
 
@@ -461,35 +508,59 @@ class CameraFragment : Fragment() {
         return when(seekBartype) {
             SEEKBAR_TYPE.ISO -> isoSeekbar
             SEEKBAR_TYPE.EXPOSURE -> exposureSeekbar
+            SEEKBAR_TYPE.APERTURE -> apertureSeekbar
         }
     }
 
     @RequiresApi(Build.VERSION_CODES.N)
-    private  fun  setProgressPercent(target: Long, seekBar: SeekBar, seekbarType: SEEKBAR_TYPE) {
-        val range = getIntersectedRange(getDeviceRange(seekbarType), getPracticalRange(seekbarType)) ?: return
-        val progress = abs(target - range.lower) * 100/(range.upper - range.lower)
-        if (progress <= 100) {
-            seekBar.setProgress(progress.toInt())
+    private  fun  setProgressPercent(target: Any?, seekBar: SeekBar, seekbarType: SEEKBAR_TYPE) {
+        if (target == null) return
+        val progress = when (seekbarType) {
+            SEEKBAR_TYPE.EXPOSURE, SEEKBAR_TYPE.ISO -> getEndPointProgressPercent(target as Long, seekbarType)
+            SEEKBAR_TYPE.APERTURE -> getDiscretePointProgressPercent(target as Float, seekbarType)
+        }
+        if (progress != null && progress <= 100) {
+            seekBar.progress = progress.toInt()
         }
     }
 
     @RequiresApi(Build.VERSION_CODES.N)
-    private fun getIntersectedRange(range1: Range<Long>?, range2: Range<Long>?): Range<Long>? {
+    private fun getEndPointProgressPercent(target: Long, seekbarType: SEEKBAR_TYPE): Int? {
+        val intersectedRange = getIntersectedRange(getDeviceRange(seekbarType) as EndPointRange, getPracticalRange(seekbarType) as EndPointRange) ?: return null
+        return (abs(target - intersectedRange.range!!.lower) * 100/(intersectedRange.range.upper - intersectedRange.range.lower)).toInt()
+    }
+
+    private fun getDiscretePointProgressPercent(target: Float, seekbarType: SEEKBAR_TYPE): Int? {
+        val discreteRange = when(seekbarType) {
+            SEEKBAR_TYPE.APERTURE -> getDeviceRange(seekbarType) as DiscretePointRange
+            else -> return null
+        }
+        if (discreteRange.range != null) {
+            discreteRange.range.sort()
+            return discreteRange.range.indexOfFirst { target == it }
+        }
+        return null
+    }
+
+    @RequiresApi(Build.VERSION_CODES.N)
+    private fun getIntersectedRange(range1: EndPointRange?, range2: EndPointRange?): EndPointRange? {
         if (range1 == null || range2 == null) {
             return null
         }
-        return Range(max(range1.lower, range2.lower), min(range2.upper, range1.upper))
+        return EndPointRange(Range(max(range1.range!!.lower, range2.range!!.lower), min(range2.range.upper, range1.range.upper)))
     }
 
     private fun setRanges() {
-        isoDeviceRange = getDeviceRange(SEEKBAR_TYPE.ISO)
-        exposureDeviceRange = getDeviceRange(SEEKBAR_TYPE.EXPOSURE)
+        isoDeviceRange = getDeviceRange(SEEKBAR_TYPE.ISO) as EndPointRange
+        exposureDeviceRange = getDeviceRange(SEEKBAR_TYPE.EXPOSURE) as EndPointRange
+        apertureDeviceRange = getDeviceRange(SEEKBAR_TYPE.APERTURE) as DiscretePointRange
     }
 
-    private fun getCurrentSeekValue(seekbarType: SEEKBAR_TYPE): Long {
+    private fun getCurrentSeekValue(seekbarType: SEEKBAR_TYPE): Any? {
         return when(seekbarType) {
             SEEKBAR_TYPE.ISO -> currentISOValue
             SEEKBAR_TYPE.EXPOSURE -> currentExposureValue
+            SEEKBAR_TYPE.APERTURE -> currentApertureValue
         }
     }
 
@@ -596,13 +667,15 @@ class CameraFragment : Fragment() {
         private const val RECORDER_VIDEO_BITRATE: Int = 10_000_000
         private const val MIN_REQUIRED_RECORDING_TIME_MILLIS: Long = 1000L
 
-        private val ISO_PRACTICAL_RANGE = Range<Long>(100, 3200)
-        private val EXPOSURE_PRACTICAL_RANGE = Range<Long>(100000, 50090000)
+        private val ISO_PRACTICAL_RANGE = EndPointRange(Range<Long>(100, 3200))
+        private val EXPOSURE_PRACTICAL_RANGE = EndPointRange(Range<Long>(100000, 50090000))
 
         enum class SEEKBAR_TYPE {
             EXPOSURE,
-            ISO
+            ISO,
+            APERTURE
         }
+
 
 
         /** Creates a [File] named with the current date and time */
