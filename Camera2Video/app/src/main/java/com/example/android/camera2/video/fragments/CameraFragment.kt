@@ -196,9 +196,6 @@ class CameraFragment : Fragment() {
         apertureText = view.findViewById(R.id.aperture_title)
 
 
-        initialiseSeekBar(isoText, SEEKBAR_TYPE.ISO)
-        initialiseSeekBar(exposureText, SEEKBAR_TYPE.EXPOSURE)
-        initialiseSeekBar(apertureText, SEEKBAR_TYPE.APERTURE)
 
 
         viewFinder.holder.addCallback(object : SurfaceHolder.Callback {
@@ -231,6 +228,12 @@ class CameraFragment : Fragment() {
         }
 
         setRanges()
+        setCharacteristicValues()
+
+        initialiseSeekBar(isoText, SEEKBAR_TYPE.ISO)
+        initialiseSeekBar(exposureText, SEEKBAR_TYPE.EXPOSURE)
+        initialiseSeekBar(apertureText, SEEKBAR_TYPE.APERTURE)
+
     }
 
     /** Creates a [MediaRecorder] instance using the provided [Surface] as input */
@@ -318,24 +321,28 @@ class CameraFragment : Fragment() {
                             delay(MIN_REQUIRED_RECORDING_TIME_MILLIS - elapsedTimeMillis)
                         }
 
-                        Log.d(TAG, "Recording stopped. Output file: $outputFile")
+                        Log.d(TAG, "Recording stopped. Output file: ${outputFile}")
                         recorder.stop()
+
+                        val renamedFile = renameFile(outputFile, "iso:${currentISOValue}_exp:${currentExposureValue}_aper:${currentApertureValue}", "mp4")
+                        Log.d(TAG, "Recording stopped. Output file: $renamedFile")
 
 
                         // Removes recording animation
                         //overlay.removeCallbacks(animationTask)
 
                         // Broadcasts the media file to the rest of the system
+
                         MediaScannerConnection.scanFile(
-                                view.context, arrayOf(outputFile.absolutePath), null, null)
+                                view.context, arrayOf(renamedFile.absolutePath), null, null)
 
                         // Launch external activity via intent to play video recorded using our provider
                         startActivity(Intent().apply {
                             action = Intent.ACTION_VIEW
                             type = MimeTypeMap.getSingleton()
-                                    .getMimeTypeFromExtension(outputFile.extension)
+                                    .getMimeTypeFromExtension(renamedFile.extension)
                             val authority = "${BuildConfig.APPLICATION_ID}.provider"
-                            data = FileProvider.getUriForFile(view.context, authority, outputFile)
+                            data = FileProvider.getUriForFile(view.context, authority, renamedFile)
                             flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
                                     Intent.FLAG_ACTIVITY_CLEAR_TOP
                         })
@@ -356,7 +363,7 @@ class CameraFragment : Fragment() {
         val target = when (seekbarType) {
             SEEKBAR_TYPE.EXPOSURE -> currentExposureValue
             SEEKBAR_TYPE.ISO -> currentISOValue
-            else -> null
+            SEEKBAR_TYPE.APERTURE -> apertureDeviceRange?.range?.get(0)
         }
         setProgressPercent(target, seekBar!!, seekbarType)
         if (getCurrentSeekValue(seekbarType) != null) {
@@ -556,6 +563,11 @@ class CameraFragment : Fragment() {
         apertureDeviceRange = getDeviceRange(SEEKBAR_TYPE.APERTURE) as DiscretePointRange
     }
 
+    // only initialising aperture since others are already initialised
+    private fun setCharacteristicValues() {
+        currentApertureValue = currentApertureValue ?: apertureDeviceRange?.range?.get(0)
+    }
+
     private fun getCurrentSeekValue(seekbarType: SEEKBAR_TYPE): Any? {
         return when(seekbarType) {
             SEEKBAR_TYPE.ISO -> currentISOValue
@@ -682,6 +694,12 @@ class CameraFragment : Fragment() {
         private fun createFile(context: Context, extension: String): File {
             val sdf = SimpleDateFormat("yyyy_MM_dd_HH_mm_ss_SSS", Locale.US)
             return File(context.getExternalFilesDir(null), "VID_${sdf.format(Date())}.$extension")
+        }
+
+        private fun renameFile(fromFile: File, newName: String, extension: String): File {
+            val to = File(fromFile.parent, "${fromFile.name.replace(".${extension}", "")}_${newName}.$extension")
+            fromFile.renameTo(to)
+            return to
         }
     }
 }
