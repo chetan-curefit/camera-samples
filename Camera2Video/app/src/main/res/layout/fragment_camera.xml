@@ -14,10 +14,10 @@
   ~ See the License for the specific language governing permissions and
   ~ limitations under the License.
   -->
-<androidx.constraintlayout.widget.ConstraintLayout
-    xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-        android:layout_width="match_parent"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
     android:layout_height="match_parent">
 
     <com.example.android.camera.utils.AutoFitSurfaceView
@@ -26,83 +26,97 @@
         android:layout_height="match_parent" />
 
     <View
-            android:id="@+id/overlay"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-        android:foreground="@android:color/transparent" />
+        android:id="@+id/overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:foreground="@android:color/transparent"
+        tools:layout_editor_absoluteX="0dp"
+        tools:layout_editor_absoluteY="-16dp" />
 
     <TextView
-            android:id="@+id/exposureTitle"
-            android:layout_margin="20dp"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintStart_toStartOf="parent"
-            android:text="Exposure"
-            android:textColor="#FFFFFF"
-            app:layout_constraintTop_toTopOf="@+id/view_finder" />
+        android:id="@+id/exposureTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_margin="20dp"
+        android:text="Exposure"
+        android:textColor="#FFFFFF"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="@+id/view_finder" />
 
     <SeekBar
-            android:layout_width="341dp"
-            android:layout_height="12dp"
-            android:id="@+id/exposure"
-            app:layout_constraintLeft_toLeftOf="parent"
-            app:layout_constraintRight_toRightOf="parent"
-            app:layout_constraintTop_toBottomOf="@+id/exposureTitle"
-            android:layout_marginTop="10dp" />
+        android:id="@+id/exposure"
+        android:layout_width="341dp"
+        android:layout_height="12dp"
+        android:layout_marginTop="10dp"
+        app:layout_constraintLeft_toLeftOf="parent"
+        app:layout_constraintRight_toRightOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/exposureTitle" />
 
     <TextView
-            android:id="@+id/iso_title"
-            android:layout_margin="20dp"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toBottomOf="@+id/exposure"
-            android:text="Iso"
-            android:textColor="#FFFFFF"
-            android:layout_marginTop="10dp" />
+        android:id="@+id/iso_title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_margin="20dp"
+        android:layout_marginTop="10dp"
+        android:text="Iso"
+        android:textColor="#FFFFFF"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/exposure" />
 
     <SeekBar
-            android:layout_width="341dp"
-            android:layout_height="12dp"
-            android:id="@+id/iso"
-            app:layout_constraintLeft_toLeftOf="parent"
-            app:layout_constraintRight_toRightOf="parent"
-            app:layout_constraintTop_toBottomOf="@+id/iso_title"
-            android:layout_marginTop="10dp" />
+        android:id="@+id/iso"
+        android:layout_width="341dp"
+        android:layout_height="12dp"
+        android:layout_marginTop="10dp"
+        app:layout_constraintLeft_toLeftOf="parent"
+        app:layout_constraintRight_toRightOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/iso_title" />
 
     <TextView
-            android:id="@+id/aperture_title"
-            android:layout_margin="20dp"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toBottomOf="@+id/iso"
-            android:text="Aperture"
-            android:textColor="#FFFFFF"
-            app:layout_constraintHorizontal_bias="0.497" />
+        android:id="@+id/aperture_title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_margin="20dp"
+        android:text="Aperture"
+        android:textColor="#FFFFFF"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintHorizontal_bias="0.497"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/iso" />
 
     <SeekBar
-            android:layout_width="341dp"
-            android:layout_height="12dp"
-            android:id="@+id/aperture"
-            app:layout_constraintLeft_toLeftOf="parent"
-            app:layout_constraintRight_toRightOf="parent"
-            app:layout_constraintTop_toBottomOf="@id/aperture_title"
-            android:layout_marginTop="10dp" />
+        android:id="@+id/aperture"
+        android:layout_width="341dp"
+        android:layout_height="12dp"
+        android:layout_marginTop="10dp"
+        app:layout_constraintLeft_toLeftOf="parent"
+        app:layout_constraintRight_toRightOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/aperture_title" />
 
     <ImageButton
         android:id="@+id/capture_button"
         android:layout_width="96dp"
         android:layout_height="96dp"
         android:layout_marginBottom="96dp"
-        android:scaleType="fitCenter"
         android:background="@drawable/ic_shutter"
-        app:layout_constraintLeft_toLeftOf="parent"
-        app:layout_constraintRight_toRightOf="parent"
+        android:contentDescription="@string/capture"
+        android:scaleType="fitCenter"
         app:layout_constraintBottom_toBottomOf="parent"
-        android:contentDescription="@string/capture" />
+        app:layout_constraintLeft_toLeftOf="parent"
+        app:layout_constraintRight_toRightOf="parent" />
+
+    <TextView
+        android:id="@+id/timertext"
+        android:layout_width="59dp"
+        android:layout_height="17dp"
+        android:layout_marginTop="10dp"
+        android:background="#FFFFFF"
+        android:textStyle="bold"
+        android:visibility="invisible"
+        app:layout_constraintEnd_toStartOf="@+id/capture_button"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="@+id/capture_button" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

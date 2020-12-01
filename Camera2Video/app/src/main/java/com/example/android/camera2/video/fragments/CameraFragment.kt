@@ -161,6 +161,9 @@ class CameraFragment : Fragment() {
     private lateinit var exposureText: TextView
     private lateinit var apertureText: TextView
 
+    /** Textview for timer */
+    private lateinit var timerText: TextView
+
     private var currentExposureValue: Long = (EXPOSURE_PRACTICAL_RANGE.range!!.upper+ EXPOSURE_PRACTICAL_RANGE.range.lower)/2
     private var currentISOValue: Long = (ISO_PRACTICAL_RANGE.range!!.lower + ISO_PRACTICAL_RANGE.range.upper)/2
     private var currentApertureValue: Float? = null
@@ -168,6 +171,11 @@ class CameraFragment : Fragment() {
     private var exposureDeviceRange: EndPointRange? = null
     private var isoDeviceRange: EndPointRange? = null
     private var apertureDeviceRange: DiscretePointRange? = null
+
+    private var handler: Handler = Handler()
+    private lateinit var runnable: Runnable
+    private var timerSecondsElapsed: Long = 0
+    private val timerInterval = 1000
 
     private var isRecording: Boolean = false
 
@@ -187,13 +195,35 @@ class CameraFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         overlay = view.findViewById(R.id.overlay)
+
         viewFinder = view.findViewById(R.id.view_finder)
+
         isoSeekbar = view.findViewById(R.id.iso)
         exposureSeekbar = view.findViewById(R.id.exposure)
         apertureSeekbar = view.findViewById(R.id.aperture)
+
         isoText = view.findViewById(R.id.iso_title)
         exposureText = view.findViewById(R.id.exposureTitle)
         apertureText = view.findViewById(R.id.aperture_title)
+
+        timerText = view.findViewById(R.id.timertext)
+
+        // SAM conversion: https://kotlinlang.org/docs/reference/java-interop.html#sam-conversions
+        runnable = Runnable {
+            if (isRecording) {
+                handler.postDelayed(runnable, timerInterval.toLong())
+            }
+            timerSecondsElapsed += 1
+            val secondsElapsed = timerSecondsElapsed
+            val seconds = secondsElapsed % 60
+            val minutes = (secondsElapsed / 60) % 60
+            val hours = secondsElapsed / 3600
+            val secondsText = if (seconds > 9) seconds.toString() else "0${seconds}"
+            val minutesText = if (minutes > 9) "$minutes:" else "0${minutes}:"
+            val hoursText = if (hours > 0) "$hours:" else ""
+            timerText.text = "${hoursText}${minutesText}${secondsText}"
+        }
+
 
 
 
@@ -278,6 +308,11 @@ class CameraFragment : Fragment() {
                 if (!isRecording)
                     lifecycleScope.launch(Dispatchers.IO) {
                         isRecording = true
+
+                        timerSecondsElapsed = 0
+
+                        handler.post(runnable)
+
                         // Prevents screen rotation during the video recording
                         requireActivity().requestedOrientation =
                                 ActivityInfo.SCREEN_ORIENTATION_LOCKED
@@ -299,6 +334,7 @@ class CameraFragment : Fragment() {
                         requireActivity().runOnUiThread(object : Runnable {
                             override fun run() {
                                 (view as ImageButton).isSelected = true
+                                timerText.visibility = View.VISIBLE
                             }
                         })
 
@@ -309,7 +345,11 @@ class CameraFragment : Fragment() {
                     } else lifecycleScope.launch(Dispatchers.IO) {
                         isRecording = false
 
-                        requireActivity().runOnUiThread { (view as ImageButton).isSelected = false }
+                        handler.removeCallbacks(runnable)
+                        requireActivity().runOnUiThread {
+                            (view as ImageButton).isSelected = false
+                            timerText.visibility = View.INVISIBLE
+                        }
 
                         // Unlocks screen rotation after recording finished
                         requireActivity().requestedOrientation =
