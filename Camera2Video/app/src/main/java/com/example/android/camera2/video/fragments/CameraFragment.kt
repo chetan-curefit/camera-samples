@@ -21,6 +21,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.graphics.Color
+import android.graphics.SurfaceTexture
 import android.hardware.camera2.*
 import android.media.MediaCodec
 import android.media.MediaRecorder
@@ -45,19 +46,15 @@ import androidx.lifecycle.lifecycleScope
 import androidx.navigation.NavController
 import androidx.navigation.Navigation
 import androidx.navigation.fragment.navArgs
-import com.example.android.camera.utils.AutoFitSurfaceView
-import com.example.android.camera.utils.OrientationLiveData
-import com.example.android.camera.utils.getPreviewOutputSize
+import com.example.android.camera.utils.*
 import com.example.android.camera2.video.BuildConfig
 import com.example.android.camera2.video.CameraActivity
 import com.example.android.camera2.video.R
 import kotlinx.android.synthetic.main.fragment_camera.*
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.*
 import java.io.File
 import java.lang.Long.max
+import java.lang.Runnable
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.coroutines.resume
@@ -139,7 +136,18 @@ class CameraFragment : Fragment() {
     }
 
     /** Where the camera preview is displayed */
-    private lateinit var viewFinder: AutoFitSurfaceView
+    private lateinit var textureView: TextureView
+    private val textureListener = object: TextureView.SurfaceTextureListener {
+        @RequiresApi(Build.VERSION_CODES.N)
+        override fun onSurfaceTextureAvailable(surface: SurfaceTexture?, width: Int, height: Int) {
+            textureView.post{ initializeCamera() }
+        }
+
+        override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture?, width: Int, height: Int) = Unit
+        override fun onSurfaceTextureUpdated(surface: SurfaceTexture?) = Unit
+        override fun onSurfaceTextureDestroyed(surface: SurfaceTexture?) = false
+    }
+
 
     /** Overlay on top of the camera preview */
     private lateinit var overlay: View
@@ -172,10 +180,20 @@ class CameraFragment : Fragment() {
     private var isoDeviceRange: EndPointRange? = null
     private var apertureDeviceRange: DiscretePointRange? = null
 
-    private var handler: Handler = Handler()
-    private lateinit var runnable: Runnable
+    private var timerHandler: Handler = Handler()
+    private lateinit var timerRunnable: Runnable
     private var timerSecondsElapsed: Long = 0
     private val timerInterval = 1000
+
+    private var calibrationHandler: Handler = Handler()
+    private lateinit var calibrationRunnable: Runnable
+    private var calibrationTimeInterval: Long = 50
+    private var isCalibrating = false
+    private var currentEndPointRangeCalibrationValue: Int = 0
+    private lateinit var calibrateButton: ImageButton
+    private lateinit var calibrateText: TextView
+
+    private lateinit var textureSurface: Surface
 
     private var isRecording: Boolean = false
 
@@ -196,7 +214,9 @@ class CameraFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
         overlay = view.findViewById(R.id.overlay)
 
-        viewFinder = view.findViewById(R.id.view_finder)
+        textureView = view.findViewById(R.id.view_finder)
+
+        textureView.surfaceTextureListener = textureListener
 
         isoSeekbar = view.findViewById(R.id.iso)
         exposureSeekbar = view.findViewById(R.id.exposure)
@@ -206,12 +226,15 @@ class CameraFragment : Fragment() {
         exposureText = view.findViewById(R.id.exposureTitle)
         apertureText = view.findViewById(R.id.aperture_title)
 
+        calibrateButton = view.findViewById(R.id.calibrate_button)
+        calibrateText = view.findViewById(R.id.calibrate_text)
+
         timerText = view.findViewById(R.id.timertext)
 
         // SAM conversion: https://kotlinlang.org/docs/reference/java-interop.html#sam-conversions
-        runnable = Runnable {
+        timerRunnable = Runnable {
             if (isRecording) {
-                handler.postDelayed(runnable, timerInterval.toLong())
+                timerHandler.postDelayed(timerRunnable, timerInterval.toLong())
             }
             timerSecondsElapsed += 1
             val secondsElapsed = timerSecondsElapsed
@@ -224,31 +247,6 @@ class CameraFragment : Fragment() {
             timerText.text = "${hoursText}${minutesText}${secondsText}"
         }
 
-
-
-
-
-        viewFinder.holder.addCallback(object : SurfaceHolder.Callback {
-            override fun surfaceDestroyed(holder: SurfaceHolder) = Unit
-            override fun surfaceChanged(
-                    holder: SurfaceHolder,
-                    format: Int,
-                    width: Int,
-                    height: Int) = Unit
-
-            override fun surfaceCreated(holder: SurfaceHolder) {
-
-                // Selects appropriate preview size and configures view finder
-                val previewSize = getPreviewOutputSize(
-                        viewFinder.display, characteristics, SurfaceHolder::class.java)
-                Log.d(TAG, "View finder size: ${viewFinder.width} x ${viewFinder.height}")
-                Log.d(TAG, "Selected preview size: $previewSize")
-                viewFinder.setAspectRatio(previewSize.width, previewSize.height)
-
-                // To ensure that size is set, initialize camera in the view's thread
-                viewFinder.post { initializeCamera() }
-            }
-        })
 
         // Used to rotate the output media to match device orientation
         relativeOrientation = OrientationLiveData(requireContext(), characteristics).apply {
@@ -286,14 +284,17 @@ class CameraFragment : Fragment() {
      * - Configures the camera session
      * - Starts the preview by dispatching a repeating request
      */
+    @RequiresApi(Build.VERSION_CODES.N)
     @SuppressLint("ClickableViewAccessibility")
     private fun initializeCamera() = lifecycleScope.launch(Dispatchers.Main) {
 
         // Open the selected camera
         camera = openCamera(cameraManager, args.cameraId, cameraHandler)
 
+        textureSurface = Surface(textureView.surfaceTexture)
+
         // Creates list of Surfaces where the camera will output frames
-        val targets = listOf(viewFinder.holder.surface, recorderSurface)
+        val targets = listOf(textureSurface, recorderSurface)
 
         // Start a capture session using our open camera and list of Surfaces where frames will go
         session = createCaptureSession(camera, targets, cameraHandler)
@@ -311,7 +312,7 @@ class CameraFragment : Fragment() {
 
                         timerSecondsElapsed = 0
 
-                        handler.post(runnable)
+                        timerHandler.post(timerRunnable)
 
                         // Prevents screen rotation during the video recording
                         requireActivity().requestedOrientation =
@@ -345,7 +346,7 @@ class CameraFragment : Fragment() {
                     } else lifecycleScope.launch(Dispatchers.IO) {
                         isRecording = false
 
-                        handler.removeCallbacks(runnable)
+                        timerHandler.removeCallbacks(timerRunnable)
                         requireActivity().runOnUiThread {
                             (view as ImageButton).isSelected = false
                             timerText.visibility = View.INVISIBLE
@@ -394,6 +395,66 @@ class CameraFragment : Fragment() {
             }
         })
 
+        calibrateButton.setOnClickListener {
+            if (!isCalibrating) {
+                calibrateText.text = "Calibrating"
+                startCalibrating(SEEKBAR_TYPE.EXPOSURE)
+            }
+        }
+
+    }
+
+
+    @RequiresApi(Build.VERSION_CODES.N)
+    private fun startCalibrating(seekBarType: SEEKBAR_TYPE) {
+        isCalibrating = true
+
+        val currentValue = getInitialValues(seekBarType) as Long
+        val calibrator = SimpleBrightPixelCalibrator(currentValue as Long, null, null)
+        val calibrationIterations = getCalibrationIterations(seekBarType)
+        val seekBar = getSeekBar(seekBarType)
+        calibrationRunnable = Runnable {
+            val bitmap = textureView.bitmap
+            val valueToTry = getRangedValue(seekBarType, currentEndPointRangeCalibrationValue)
+            seekBar?.progress = currentEndPointRangeCalibrationValue
+            //setCaptureRequestValue(seekBarType, currentEndPointRangeCalibrationValue)
+            val continueCalibration = (calibrator as SimpleBrightPixelCalibrator).evaluateMetric(bitmap, valueToTry as Long)
+
+            Log.d("__current exp", currentEndPointRangeCalibrationValue.toString() + " " + valueToTry.toString() + " " + (currentEndPointRangeCalibrationValue.toInt() + 100/calibrationIterations <= 100))
+            if (continueCalibration && currentEndPointRangeCalibrationValue.toInt() + 100/calibrationIterations <= 100) {
+                currentEndPointRangeCalibrationValue = currentEndPointRangeCalibrationValue.toInt() + 100/calibrationIterations
+                calibrationHandler.postDelayed(calibrationRunnable, calibrationTimeInterval)
+            } else {
+                val bestProgress = getEndPointProgressPercent((calibrator as SimpleBrightPixelCalibrator).bestValue, seekBarType) as Int
+                seekBar!!.progress = bestProgress
+                Log.d("__best value", seekBarType.toString() + " " + (calibrator as SimpleBrightPixelCalibrator).bestValue + " " + bestProgress)
+                //setCaptureRequestValue(seekBarType, bestProgress)
+                currentEndPointRangeCalibrationValue = 0
+                if (seekBarType == SEEKBAR_TYPE.EXPOSURE) {
+                    startCalibrating(SEEKBAR_TYPE.ISO)
+                } else {
+                    calibrateText.text = "Press to Calibrate"
+                    isCalibrating = false
+                }
+            }
+        }
+        calibrationHandler.post(calibrationRunnable)
+    }
+
+    private fun getCalibrationIterations(seekbarType: SEEKBAR_TYPE): Int {
+        return when(seekbarType) {
+            SEEKBAR_TYPE.EXPOSURE -> 30
+            SEEKBAR_TYPE.ISO ->  30
+            else -> 10
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.N)
+    private fun getInitialValues(seekbarType:SEEKBAR_TYPE): Number {
+        return when(seekbarType) {
+            SEEKBAR_TYPE.EXPOSURE, SEEKBAR_TYPE.ISO -> max((getPracticalRange(seekbarType) as EndPointRange).range!!.lower, (getDeviceRange(seekbarType) as EndPointRange).range!!.lower)
+            SEEKBAR_TYPE.APERTURE -> (getDeviceRange(seekbarType) as DiscretePointRange).range!!.get(0)
+        }
     }
 
     @RequiresApi(Build.VERSION_CODES.O)
@@ -405,11 +466,11 @@ class CameraFragment : Fragment() {
             SEEKBAR_TYPE.ISO -> currentISOValue
             SEEKBAR_TYPE.APERTURE -> apertureDeviceRange?.range?.get(0)
         }
-        setProgressPercent(target, seekBar!!, seekbarType)
+        setProgressPercent(target, seekbarType)
         if (getCurrentSeekValue(seekbarType) != null) {
             textView.text = getSeekBarText(seekbarType) + " " + getCurrentSeekValue(seekbarType)
         }
-        seekBar.setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener {
+        seekBar!!.setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener {
            override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
 
                val newCaptureRequestValue = setCaptureRequestValue(seekbarType, progress)
@@ -455,7 +516,7 @@ class CameraFragment : Fragment() {
     private fun createCaptureRequest(seekbarType: SEEKBAR_TYPE?, newParamValue: Number?): CaptureRequest {
         return session.device.createCaptureRequest(if (isRecording) CameraDevice.TEMPLATE_RECORD else CameraDevice.TEMPLATE_PREVIEW).apply {
             // Add the preview and recording surface targets
-            addTarget(viewFinder.holder.surface)
+            addTarget(textureSurface)
             if (isRecording) {
                 addTarget(recorderSurface)
                 // Sets user requested FPS for all targets
@@ -501,11 +562,10 @@ class CameraFragment : Fragment() {
         if (seekbarType == null) return null
 
         // not using the full exposure range since it gives bad output
-        val chosenRange = if (seekbarType == SEEKBAR_TYPE.EXPOSURE) EXPOSURE_PRACTICAL_RANGE else getDeviceRange(seekbarType) as EndPointRange?
+        val chosenRange = getIntersectedRange(getDeviceRange(seekbarType) as EndPointRange, getPracticalRange(seekbarType) as EndPointRange)
         val deviceRange = getDeviceRange(seekbarType) as EndPointRange?
         if (chosenRange?.range != null && deviceRange?.range != null) {
-            val calculatedValue: Long = chosenRange.range.lower + (chosenRange.range.upper - chosenRange.range.lower)*progress/100
-            return adjustWithinRange(deviceRange.range, adjustWithinRange(chosenRange.range, calculatedValue))
+            return chosenRange.range.lower + (chosenRange.range.upper - chosenRange.range.lower)*min(progress, 100)/100
         }
         return null
     }
@@ -560,14 +620,15 @@ class CameraFragment : Fragment() {
     }
 
     @RequiresApi(Build.VERSION_CODES.N)
-    private  fun  setProgressPercent(target: Any?, seekBar: SeekBar, seekbarType: SEEKBAR_TYPE) {
+    private  fun  setProgressPercent(target: Any?, seekbarType: SEEKBAR_TYPE) {
         if (target == null) return
+        val seekBar = getSeekBar(seekbarType)
         val progress = when (seekbarType) {
             SEEKBAR_TYPE.EXPOSURE, SEEKBAR_TYPE.ISO -> getEndPointProgressPercent(target as Long, seekbarType)
             SEEKBAR_TYPE.APERTURE -> getDiscretePointProgressPercent(target as Float, seekbarType)
         }
         if (progress != null && progress <= 100) {
-            seekBar.progress = progress.toInt()
+            seekBar?.progress = progress.toInt()
         }
     }
 
@@ -719,7 +780,7 @@ class CameraFragment : Fragment() {
         private const val RECORDER_VIDEO_BITRATE: Int = 10_000_000
         private const val MIN_REQUIRED_RECORDING_TIME_MILLIS: Long = 1000L
 
-        private val ISO_PRACTICAL_RANGE = EndPointRange(Range<Long>(100, 3200))
+        private val ISO_PRACTICAL_RANGE = EndPointRange(Range<Long>(100, Long.MAX_VALUE))
         private val EXPOSURE_PRACTICAL_RANGE = EndPointRange(Range<Long>(100000, 50090000))
 
         enum class SEEKBAR_TYPE {

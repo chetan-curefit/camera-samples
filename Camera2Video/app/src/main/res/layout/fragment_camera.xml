@@ -20,7 +20,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
-    <com.example.android.camera.utils.AutoFitSurfaceView
+    <TextureView
         android:id="@+id/view_finder"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
@@ -96,6 +96,18 @@
         app:layout_constraintTop_toBottomOf="@id/aperture_title" />
 
     <ImageButton
+        android:id="@+id/calibrate_button"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_marginBottom="40dp"
+        android:background="@drawable/ic_shutter"
+        android:contentDescription="@string/capture"
+        android:scaleType="fitCenter"
+        app:layout_constraintBottom_toTopOf="@+id/capture_button"
+        app:layout_constraintLeft_toLeftOf="parent"
+        app:layout_constraintRight_toRightOf="parent" />
+
+    <ImageButton
         android:id="@+id/capture_button"
         android:layout_width="96dp"
         android:layout_height="96dp"
@@ -118,5 +130,16 @@
         app:layout_constraintEnd_toStartOf="@+id/capture_button"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="@+id/capture_button" />
+
+    <TextView
+        android:id="@+id/calibrate_text"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="20dp"
+        android:background="#FDFDFD"
+        android:text="Press to Calibrate"
+        app:layout_constraintBottom_toTopOf="@+id/calibrate_button"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>
