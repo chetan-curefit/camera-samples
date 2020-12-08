@@ -1,11 +1,13 @@
 package com.example.android.camera.utils
 
-import android.graphics.Bitmap
-import android.graphics.Color
+import android.graphics.*
 import android.util.Log
+import kotlin.math.pow
+import kotlin.math.sqrt
 
-interface Calibrator {
-    fun evaluateMetric(bmp: Bitmap, currentValue: Long): Ret
+
+interface Calibrator<T, F> {
+    fun evaluateMetric(bmp: Bitmap, currentValue: Pair<T, F>)
 }
 class Ret {
     var continueLoop: Boolean = false
@@ -17,59 +19,82 @@ class Ret {
 }
 
 
-class SimpleBrightPixelCalibrator: Calibrator {
-   var bestValue: Long = 0
+class SimpleBrightPixelCalibrator(initialValue: Pair<Int, Int>, thresholdRatio: Double?, pixelStride: Int?) {
+    var bestValue: Pair<Int, Int>
+    var bestContrast: Double = 0.0
+
+    private var timesCalled = 0
+    
+    private val notLogging: Boolean? = true
 
     private var thresholdRatio: Double = 1.toDouble()/10000
     private var pixelStride: Int = 1
 
-    constructor(initialValue: Long, thresholdRatio: Double?, pixelStride: Int?) {
-        bestValue = initialValue
+    init {
         if (thresholdRatio != null) {
             this.thresholdRatio = thresholdRatio
         }
         if (pixelStride != null) {
             this.pixelStride = pixelStride
         }
+        this.bestValue = initialValue
     }
 
-    override fun evaluateMetric(bmp: Bitmap, currentValue: Long): Ret {
+    fun evaluateMetric(bmp: Bitmap, currentValue: Pair<Int, Int>, absoluteValues: Pair<Long, Long>) {
         val width = bmp.width
         val height = bmp.height
-        var numSaturatedRed = 0
-        var numSaturatedBlue = 0
-        var numSaturatedGreen =0
-        var redAvg: Double = 0.0
-        val pixels = IntArray(height*width)
+        val grayPixels = IntArray(height*width)
+        val ogPixels = IntArray(height*width)
+
+        var time = System.currentTimeMillis()
+
+
         // can try and optimise the getPixels using stride
-        bmp.getPixels(pixels, 0, width, 0 ,0, width, height)
-        var pixIndex = 0
+        bmp.getPixels(ogPixels, 0, width, 0 ,0, width, height)
+        val time2 = System.currentTimeMillis()
+        toGrayscale1(bmp).getPixels(grayPixels, 0, width, 0 ,0, width, height)
+        val t3 = System.currentTimeMillis()
+        val contrast = rmse(grayPixels, ogPixels)
+        if (contrast > bestContrast) {
+            notLogging ?: Log.d("__best value", "${absoluteValues} ${contrast}")
+            bestContrast = contrast
+            bestValue = currentValue
+        }
+        notLogging ?: Log.d("__eval", "${absoluteValues} ${time2 -time} ${t3 - time2} ${System.currentTimeMillis()-t3} ${contrast}")
+    }
+
+    private fun toGrayscale1(bmp: Bitmap): Bitmap {
+        val width = bmp.width
+        val height = bmp.height
+        val bmpGrayscale = Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565)
+        val c = Canvas(bmpGrayscale)
+        val paint = Paint()
+        val cm = ColorMatrix()
+        cm.setSaturation(0f)
+        val f = ColorMatrixColorFilter(cm)
+        paint.colorFilter = f
+        c.drawBitmap(bmp, 0.0F, 0.0F, paint)
+        return bmpGrayscale
+    }
+
+    private fun rmse(grayPixels: IntArray, ogPixels: IntArray): Double {
+        val t1 = System.currentTimeMillis()
+        var mean: Double = grayPixels.sum().toDouble() /grayPixels.size
+        val t2 = System.currentTimeMillis()
+        var ms: Double = 0.0
+        var pixIndex =0
         var totalValuesPolled = 0
-        while (pixIndex < pixels.size) {
-            val pixelValue = pixels[pixIndex]
-            val red = Color.red(pixelValue)
-            if (red >= 255) {
-                numSaturatedRed++
-            }
-            val green = Color.green(pixelValue)
-            if (green >= 255) {
-                numSaturatedGreen++
-            }
-            val blue = Color.blue(pixelValue)
-            if (blue >= 255) {
-                numSaturatedBlue++
-            }
-            redAvg = if (totalValuesPolled > 0) ((redAvg*totalValuesPolled)+red)/(totalValuesPolled+1) else 0.toDouble()
+        timesCalled++
+        while(pixIndex < grayPixels.size) {
+            val diff = mean - Color.red(grayPixels[pixIndex]).toDouble()
+            ms += diff*diff
             totalValuesPolled++
             pixIndex += pixelStride
         }
-        val cond = numSaturatedRed.toDouble() / totalValuesPolled <= thresholdRatio
-        //Log.d("__eval", "${cond} ${currentValue} avgRed:${redAvg} " + "${numSaturatedRed}:${numSaturatedGreen}:${numSaturatedBlue}" + " " + totalValuesPolled.toString() + " " + "${numSaturatedRed.toDouble() / totalValuesPolled}:${numSaturatedGreen.toDouble()/totalValuesPolled}:${numSaturatedBlue.toDouble()/totalValuesPolled}")
-        if (cond) {
-            bestValue = currentValue
-            //Log.d("__best", "${cond} ${currentValue} " + numSaturatedRed.toString() + " " + totalValuesPolled.toString() + " " + numSaturatedRed.toDouble() / totalValuesPolled)
-            return Ret(true, pixels)
-        }
-        return Ret(false, pixels)
+        val t3 = System.currentTimeMillis()
+        val ret = sqrt(ms/grayPixels.size)
+        notLogging ?: Log.d("__rmse time", "${t2-t1} ${t3-t2} ${System.currentTimeMillis()-t3}")
+        return ret
     }
+
 }
