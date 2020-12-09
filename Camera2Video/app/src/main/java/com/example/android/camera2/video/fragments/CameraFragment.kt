@@ -34,9 +34,7 @@ import android.util.Log
 import android.util.Range
 import android.view.*
 import android.webkit.MimeTypeMap
-import android.widget.ImageButton
-import android.widget.SeekBar
-import android.widget.TextView
+import android.widget.*
 import androidx.annotation.RequiresApi
 import androidx.core.content.FileProvider
 import androidx.core.graphics.drawable.toDrawable
@@ -174,6 +172,8 @@ class CameraFragment : Fragment() {
     /** Textview for timer */
     private lateinit var timerText: TextView
 
+    private lateinit var greenMaskSwitch: Switch
+
     private var currentExposureValue: Long = (EXPOSURE_PRACTICAL_RANGE.range!!.upper+ EXPOSURE_PRACTICAL_RANGE.range.lower)/2
     private var currentISOValue: Long = (ISO_PRACTICAL_RANGE.range!!.lower + ISO_PRACTICAL_RANGE.range.upper)/2
     private var currentApertureValue: Float? = null
@@ -191,7 +191,9 @@ class CameraFragment : Fragment() {
     private lateinit var calibrationHandler: Handler
     private lateinit var calibrator: SimpleBrightPixelCalibrator
     private var calibrationTimeInterval: Long = 50
-    private var isCalibrating = false
+    private var isCalibrating by Delegates.observable(false) { property, oldValue, newValue ->
+        greenMaskSwitch?.isClickable = !newValue
+    }
     private var isLatestFrame = false
     private var currentCalibrationAbsoluteValue: Long = 0
     private var currentCalibratedSeekBar: SEEKBAR_TYPE = SEEKBAR_TYPE.EXPOSURE
@@ -215,22 +217,26 @@ class CameraFragment : Fragment() {
             exposureSeekbar.progress = calibratedExposureValue
             calibrationHandler.postDelayed(calibrationEvaluateRunnable, 150)
         } else {
-            notLogging ?: Log.d("__finish calibrating", " ")
-            isoSeekbar.progress = calibrator.bestValue.first
-            exposureSeekbar.progress = calibrator.bestValue.second
-            isCalibrating = false
-            requireActivity().runOnUiThread {calibrateText.text = START_CALIBRATING_TEXT}
+            // delaying so that the last evaluation is also included in best
+            calibrationHandler.postDelayed( {
+                notLogging ?: Log.d("__finish calibrating", " ")
+                isoSeekbar.progress = calibrator.bestValue.first
+                exposureSeekbar.progress = calibrator.bestValue.second
+                isCalibrating = false
+                requireActivity().runOnUiThread {calibrateText.text = START_CALIBRATING_TEXT}
+            }, 200)
         }
     }
 
+    private var useOnlyGreenChannelForEvaluation: Boolean = false
+
     private val evaluatorThread = HandlerThread("evaluatorThread")
     private lateinit var evaluatorHandler: Handler
-    
+
+    // set to null to enable logging
     private val notLogging: Boolean? = true
 
     private var valueChanged: Long = 0
-
-    private lateinit var captureRequestListener: CameraCaptureSession.CaptureCallback
 
 
     private lateinit var textureSurface: Surface
@@ -271,6 +277,20 @@ class CameraFragment : Fragment() {
 
         timerText = view.findViewById(R.id.timertext)
 
+        greenMaskSwitch = view.findViewById(R.id.green_mask_switch)
+        greenMaskSwitch.setOnCheckedChangeListener(object: CompoundButton.OnCheckedChangeListener {
+            override fun onCheckedChanged(buttonView: CompoundButton?, isChecked: Boolean) {
+                if (!isCalibrating) {
+                    useOnlyGreenChannelForEvaluation = isChecked
+                    if (isChecked) {
+                        buttonView?.text = "Green Channel only"
+                    } else {
+                        buttonView?.text = "Using all channels"
+                    }
+                }
+            }
+        })
+
         // SAM conversion: https://kotlinlang.org/docs/reference/java-interop.html#sam-conversions
         timerRunnable = Runnable {
             if (isRecording) {
@@ -289,7 +309,6 @@ class CameraFragment : Fragment() {
 
         calibrationThread.start()
         calibrationHandler = Handler(calibrationThread.looper)
-        captureRequestListener = createCaptureRequestListener()
 
         evaluatorThread.start()
         evaluatorHandler = Handler(evaluatorThread.looper)
@@ -462,7 +481,7 @@ class CameraFragment : Fragment() {
         calibrationIterations = getCalibrationIterations(seekBarType)
         notLogging ?: Log.d("__startCalibrating", " ")
         currentCalibratedSeekBar = seekBarType
-        calibrator = SimpleBrightPixelCalibrator(Pair(calibratedIsoValue, calibratedExposureValue), null, null)
+        calibrator = SimpleBrightPixelCalibrator(Pair(calibratedIsoValue, calibratedExposureValue), null, null, true)
 
         if (CALIBRATION_ORDER.indexOf(seekBarType) == 0) {
             calibrationHandler.postDelayed(Runnable {
@@ -505,10 +524,12 @@ class CameraFragment : Fragment() {
         val seekBar = getSeekBar(currentCalibratedSeekBar)
         val bitmap = textureView.bitmap
         //setCaptureRequestValue(seekBarType, currentEndPointRangeCalibrationValue)
-        notLogging ?: Log.d("__calling eval", (System.currentTimeMillis() - valueChanged).toString() + " ")
         val __calibratedIsoValue = calibratedIsoValue
         val __calibratedExposureValue = calibratedExposureValue
-        evaluatorHandler.post{(calibrator as SimpleBrightPixelCalibrator).evaluateMetric(bitmap, Pair(__calibratedIsoValue, __calibratedExposureValue), Pair(getRangedValue(SEEKBAR_TYPE.ISO, __calibratedIsoValue) as Long, getRangedValue(SEEKBAR_TYPE.EXPOSURE, __calibratedExposureValue) as Long))}
+        val __absoluteIsoValue = getRangedValue(SEEKBAR_TYPE.ISO, __calibratedIsoValue)
+        val __absoluteExposureValue = getRangedValue(SEEKBAR_TYPE.EXPOSURE, __calibratedExposureValue)
+        notLogging ?: Log.d("__calling eval", (System.currentTimeMillis() - valueChanged).toString() + " $__absoluteIsoValue $__absoluteExposureValue")
+        evaluatorHandler.post{ calibrator.evaluateMetric(bitmap, Pair(__calibratedIsoValue, __calibratedExposureValue), Pair(__absoluteIsoValue as Long, __absoluteExposureValue as Long))}
         setParamForNextCalibrationIteration()
 
         notLogging ?: Log.d("__current exp", (System.currentTimeMillis() - valueChanged).toString() + " " + currentEndPointRangeCalibrationValue.toString() + " " + currentCalibrationAbsoluteValue.toString() + " "  + (currentEndPointRangeCalibrationValue.toInt() + 100/calibrationIterations <= 100))
@@ -587,26 +608,6 @@ class CameraFragment : Fragment() {
 
         session.setRepeatingRequest(captureRequest, null, cameraHandler)
         return captureRequestValue
-    }
-
-    // todo remove
-    private fun createCaptureRequestListener(): CameraCaptureSession.CaptureCallback {
-        return object : CameraCaptureSession.CaptureCallback() {
-
-
-            @RequiresApi(Build.VERSION_CODES.N)
-            override fun onCaptureProgressed(session: CameraCaptureSession, request: CaptureRequest, partialResult: CaptureResult) {
-                val key = getCaptureRequestKey(currentCalibratedSeekBar)
-                val seekBar = getSeekBar(currentCalibratedSeekBar)
-                val value  = request.get(key)
-                notLogging ?: Log.d("__oncaptureCompleted", currentCalibratedSeekBar.toString() + " " + value.toString())
-                if (isCalibrating) {
-                    if (value == currentCalibrationAbsoluteValue) {
-                        notLogging ?: Log.d("__matching value", (System.currentTimeMillis() - valueChanged).toString())
-                    }
-                }
-            }
-        }
     }
 
     private fun createCaptureRequest(): CaptureRequest {
