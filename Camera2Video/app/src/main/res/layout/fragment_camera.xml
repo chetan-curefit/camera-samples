@@ -31,7 +31,7 @@
         android:layout_height="match_parent"
         android:foreground="@android:color/transparent"
         tools:layout_editor_absoluteX="16dp"
-        tools:layout_editor_absoluteY="-68dp" />
+        tools:layout_editor_absoluteY="0dp" />
 
     <TextView
         android:id="@+id/exposureTitle"
@@ -151,5 +151,18 @@
         android:text="Green mask Off"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintTop_toBottomOf="@+id/aperture" />
+
+    <EditText
+        android:id="@+id/it_duration_text_input"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="20dp"
+        android:layout_marginEnd="20dp"
+        android:background="#FFFFFF"
+        android:ems="10"
+        android:hint="Iteration interaval"
+        android:inputType="number"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/green_mask_switch" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

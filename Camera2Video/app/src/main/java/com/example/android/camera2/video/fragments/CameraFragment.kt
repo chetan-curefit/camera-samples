@@ -30,6 +30,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
+import android.text.Editable
+import android.text.TextWatcher
 import android.util.Log
 import android.util.Range
 import android.view.*
@@ -172,6 +174,8 @@ class CameraFragment : Fragment() {
     /** Textview for timer */
     private lateinit var timerText: TextView
 
+    private lateinit var iterationDurationTextInput: EditText
+
     private lateinit var greenMaskSwitch: Switch
 
     private var currentExposureValue: Long = (EXPOSURE_PRACTICAL_RANGE.range!!.upper+ EXPOSURE_PRACTICAL_RANGE.range.lower)/2
@@ -190,17 +194,21 @@ class CameraFragment : Fragment() {
     private var calibrationThread = HandlerThread("calibration")
     private lateinit var calibrationHandler: Handler
     private lateinit var calibrator: SimpleBrightPixelCalibrator
-    private var calibrationTimeInterval: Long = 50
+    private var calibrationTimeInterval: Long = 200
+    private var calibrationHighToLowTimeTimeInterval = 200
     private var isCalibrating by Delegates.observable(false) { property, oldValue, newValue ->
         greenMaskSwitch?.isClickable = !newValue
     }
+
+    private var calibrationHighToLow = false
     private var isLatestFrame = false
     private var currentCalibrationAbsoluteValue: Long = 0
     private var currentCalibratedSeekBar: SEEKBAR_TYPE = SEEKBAR_TYPE.EXPOSURE
     private var currentEndPointRangeCalibrationValue: Int = 0
     private lateinit var calibrateButton: ImageButton
     private lateinit var calibrateText: TextView
-    private var calibrationIterations by Delegates.notNull<Int>()
+    private val isoCalibrationIterations = 7
+    private val exposureCalibrationIterations = 7
     private var calibratedIsoValue: Int = 0
     private var calibratedExposureValue: Int = 0
     @RequiresApi(Build.VERSION_CODES.N)
@@ -215,17 +223,19 @@ class CameraFragment : Fragment() {
             //seekBar?.progress = currentEndPointRangeCalibrationValue
             isoSeekbar.progress = calibratedIsoValue
             exposureSeekbar.progress = calibratedExposureValue
-            calibrationHandler.postDelayed(calibrationEvaluateRunnable, 150)
+            val delayTime = calibrationTimeInterval + if (calibrationHighToLow) calibrationHighToLowTimeTimeInterval else 0
+            calibrationHandler.postDelayed(calibrationEvaluateRunnable, delayTime)
         } else {
             // delaying so that the last evaluation is also included in best
             calibrationHandler.postDelayed( {
-                notLogging ?: Log.d("__finish calibrating", " ")
                 isoSeekbar.progress = calibrator.bestValue.first
                 exposureSeekbar.progress = calibrator.bestValue.second
+                notLogging ?: Log.d("__finish calibrating", "${calibrator.bestContrast} ${calibrator.bestValue} ${calibrator.bestAbsoluteValue}")
                 isCalibrating = false
                 requireActivity().runOnUiThread {calibrateText.text = START_CALIBRATING_TEXT}
             }, 200)
         }
+        calibrationHighToLow = false
     }
 
     private var useOnlyGreenChannelForEvaluation: Boolean = false
@@ -234,7 +244,7 @@ class CameraFragment : Fragment() {
     private lateinit var evaluatorHandler: Handler
 
     // set to null to enable logging
-    private val notLogging: Boolean? = true
+    private val notLogging: Boolean? = null
 
     private var valueChanged: Long = 0
 
@@ -289,6 +299,21 @@ class CameraFragment : Fragment() {
                     }
                 }
             }
+        })
+
+        iterationDurationTextInput = view.findViewById(R.id.it_duration_text_input)
+        iterationDurationTextInput.addTextChangedListener(object: TextWatcher {
+            override fun afterTextChanged(s: Editable?) = Unit
+
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                val typedString = s?.toString()
+                notLogging ?: Log.d("__onttypedtext", "$typedString")
+                if (typedString != null && typedString != "" ) {
+                        calibrationTimeInterval = typedString?.toLong()
+                    }
+                }
         })
 
         // SAM conversion: https://kotlinlang.org/docs/reference/java-interop.html#sam-conversions
@@ -431,7 +456,7 @@ class CameraFragment : Fragment() {
                         Log.d(TAG, "Recording stopped. Output file: ${outputFile}")
                         recorder.stop()
 
-                        val renamedFile = renameFile(outputFile, "iso:${currentISOValue}_exp:${currentExposureValue}_aper:${currentApertureValue}", "mp4")
+                        val renamedFile = renameFile(outputFile, "iso_${currentISOValue}_exp_${currentExposureValue}_aper_${currentApertureValue}_green_${useOnlyGreenChannelForEvaluation}", "mp4")
                         Log.d(TAG, "Recording stopped. Output file: $renamedFile")
 
 
@@ -478,10 +503,8 @@ class CameraFragment : Fragment() {
         initialiseCalibrationValues()
 
 
-        calibrationIterations = getCalibrationIterations(seekBarType)
         notLogging ?: Log.d("__startCalibrating", " ")
-        currentCalibratedSeekBar = seekBarType
-        calibrator = SimpleBrightPixelCalibrator(Pair(calibratedIsoValue, calibratedExposureValue), null, null, true)
+        calibrator = SimpleBrightPixelCalibrator(Pair(calibratedIsoValue, calibratedExposureValue), null, null, useOnlyGreenChannelForEvaluation)
 
         if (CALIBRATION_ORDER.indexOf(seekBarType) == 0) {
             calibrationHandler.postDelayed(Runnable {
@@ -498,10 +521,11 @@ class CameraFragment : Fragment() {
 
     @RequiresApi(Build.VERSION_CODES.N)
     private fun setParamForNextCalibrationIteration() {
-        if (calibratedIsoValue + 100/7 <= 100) {
-            calibratedIsoValue += 100/7
+        if (calibratedIsoValue + 100/isoCalibrationIterations <= 100) {
+            calibratedIsoValue += 100/isoCalibrationIterations
         } else {
-            calibratedExposureValue += 100/5
+            calibrationHighToLow = true
+            calibratedExposureValue += 100/exposureCalibrationIterations
             calibratedIsoValue = getProgressPercent(ISO_INITIAL_CALIBRATION_VALUE, SEEKBAR_TYPE.ISO) as Int
         }
         calibrationHandler.post(calibrationRunnable)
@@ -509,6 +533,8 @@ class CameraFragment : Fragment() {
 
     @RequiresApi(Build.VERSION_CODES.N)
     private fun initialiseCalibrationValues() {
+        calibratedIsoValue = getProgressPercent(ISO_INITIAL_CALIBRATION_VALUE, SEEKBAR_TYPE.ISO) as Int
+        calibratedExposureValue = getProgressPercent(EXPOSURE_INITIAL_CALIBRATION_VALUE, SEEKBAR_TYPE.EXPOSURE) as Int
         val isoProgress = getProgressPercent(ISO_INITIAL_CALIBRATION_VALUE, SEEKBAR_TYPE.ISO)
         val exposureProgress = getProgressPercent(EXPOSURE_INITIAL_CALIBRATION_VALUE, SEEKBAR_TYPE.EXPOSURE)
         if (isoProgress != null) {
@@ -532,7 +558,7 @@ class CameraFragment : Fragment() {
         evaluatorHandler.post{ calibrator.evaluateMetric(bitmap, Pair(__calibratedIsoValue, __calibratedExposureValue), Pair(__absoluteIsoValue as Long, __absoluteExposureValue as Long))}
         setParamForNextCalibrationIteration()
 
-        notLogging ?: Log.d("__current exp", (System.currentTimeMillis() - valueChanged).toString() + " " + currentEndPointRangeCalibrationValue.toString() + " " + currentCalibrationAbsoluteValue.toString() + " "  + (currentEndPointRangeCalibrationValue.toInt() + 100/calibrationIterations <= 100))
+        notLogging ?: Log.d("__current exp", (System.currentTimeMillis() - valueChanged).toString())
         valueChanged = System.currentTimeMillis()
 
     }
@@ -918,7 +944,7 @@ class CameraFragment : Fragment() {
 
         /** Creates a [File] named with the current date and time */
         private fun createFile(context: Context, extension: String): File {
-            val sdf = SimpleDateFormat("yyyy_MM_dd_HH_mm_ss_SSS", Locale.US)
+            val sdf = SimpleDateFormat("MM_dd_HH_mm_ss", Locale.US)
             return File(context.getExternalFilesDir(null), "VID_${sdf.format(Date())}.$extension")
         }
 

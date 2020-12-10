@@ -25,10 +25,11 @@ class SimpleBrightPixelCalibrator(initialValue: Pair<Int, Int>, thresholdRatio: 
     var bestValue: Pair<Int, Int>
     var bestContrast: Double = 0.0
 
+    var bestAbsoluteValue: Pair<Long,Long> = Pair(0, 0)
     var useOnlyGreenChannel = false
 
     // set to null to enable logging
-    private val notLogging: Boolean? = true
+    private val notLogging: Boolean? = null
 
     private var thresholdRatio: Double = 1.toDouble()/10000
 
@@ -71,6 +72,7 @@ class SimpleBrightPixelCalibrator(initialValue: Pair<Int, Int>, thresholdRatio: 
             notLogging ?: Log.d("__best value", "${absoluteValues} ${contrast}")
             bestContrast = contrast
             bestValue = currentValue
+            bestAbsoluteValue = absoluteValues
         }
         notLogging ?: Log.d("__eval", "${absoluteValues} ${time2 -time} ${t3 - time2} ${System.currentTimeMillis()-t3} ${contrast}")
     }
@@ -105,7 +107,11 @@ class SimpleBrightPixelCalibrator(initialValue: Pair<Int, Int>, thresholdRatio: 
      * */
     private fun rmse(grayPixels: IntArray, ogPixels: IntArray): Double {
         val t1 = System.currentTimeMillis()
-        val mean: Double = grayPixels.sum().toDouble() /grayPixels.size
+        var graySum: Double = 0.0
+        for (pixelValue: Int in grayPixels) {
+            graySum += Color.red(pixelValue)
+        }
+        val mean = graySum/grayPixels.size
         val t2 = System.currentTimeMillis()
         var ms: Double = 0.0
         var pixIndex =0
@@ -118,7 +124,7 @@ class SimpleBrightPixelCalibrator(initialValue: Pair<Int, Int>, thresholdRatio: 
         }
         val t3 = System.currentTimeMillis()
         val ret = sqrt(ms/grayPixels.size)
-        notLogging ?: Log.d("__rmse time", "${t2-t1} ${t3-t2} ${System.currentTimeMillis()-t3}")
+        notLogging ?: Log.d("__rmse time", "${t2-t1} ${t3-t2} ${System.currentTimeMillis()-t3} $mean $totalValuesPolled")
         return ret
     }
 
